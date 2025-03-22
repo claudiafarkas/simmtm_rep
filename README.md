@@ -33,3 +33,13 @@ The datasets required for replication are publicly available in the authors' Git
 - SleepEEG (299.8 MB)
 - ETTm1 (10 MB)
 - Weather (7.2 MB)
+
+ 
+ ## File Architecture 🏰
+ In this layout:
+- **Shared Modules** (masking, projector, decoder, loss functions) are used by both classification and forecasting.
+- **Separate Encoders** (1DResNet vs. Transformer) match each partner’s experiments.
+- **Notebook Organization**: Each notebook handles a major workflow step (preprocessing, classification, forecasting, evaluation).
+
+Refer to `classification_experiment.ipynb` or `forecasting_experiment.ipynb` to run the respective tasks from pre-training to fine-tuning. For more details on each module, see the docstrings and inline comments within the codebase.
+
