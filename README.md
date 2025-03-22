@@ -44,6 +44,7 @@ The datasets required for replication are publicly available in the authors' Git
 Refer to `classification_experiment.ipynb` or `forecasting_experiment.ipynb` to run the respective tasks from pre-training to fine-tuning. For more details on each module, see the docstrings and inline comments within the codebase.
 
 Note: In order for the files to read the data you must download the data sets from the original github readme.md file (https://github.com/thuml/SimMTM/tree/main) from "Tsinghua Cloud". Then create the following file architecure:
+```
 data/
 │   ├── classification/
 │   │   ├── Epilepsy/
@@ -57,4 +58,4 @@ data/
 │   └── forecasting/
 │       ├── ETTm1.csv
 │       └── weather.csv
-
+```
