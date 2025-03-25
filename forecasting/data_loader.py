@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 from timefeatures import time_features
 from m4 import M4Dataset, M4Meta
 from uea import subsample, interpolate_missing, Normalizer
-from sktime.utils import load_data
+import sktime.datasets as load_data
 import warnings
 from sklearn.preprocessing import StandardScaler
 
