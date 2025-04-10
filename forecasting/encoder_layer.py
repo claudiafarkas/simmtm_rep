@@ -41,3 +41,30 @@ class VanillaTransformerEncoder(nn.Module):
         x = self.conv_pos_encoder(x)  # add conv-based positional encoding
         x = self.transformer_encoder(x)
         return x
+
+
+class ChannelIndependentTransformer(nn.Module):
+    def __init__(self, num_channels, dim, n_head, n_layers, dim_ff=512, dropout=0.1, kernel_size=3):
+        super(ChannelIndependentTransformer, self).__init__()
+        self.encoders = nn.ModuleList([
+            VanillaTransformerEncoder(
+                num_channels=1,
+                dim=dim,
+                n_head=n_head,
+                n_layers=n_layers,
+                dim_ff=dim_ff,
+                dropout=dropout,
+                kernel_size=kernel_size
+            ) for _ in range(num_channels)
+        ])
+        self.num_channels = num_channels
+
+    def forward(self, x):
+        # x shape: (B, L, C)
+        B, L, C = x.shape
+        outputs = []
+        for i in range(C):
+            channel_i = x[:, :, i].unsqueeze(-1)  # shape: (B, L, 1)
+            encoded = self.encoders[i](channel_i)  # (B, L, d_model)
+            outputs.append(encoded)
+        return torch.stack(outputs, dim=2)  # (B, L, C, d_model)
