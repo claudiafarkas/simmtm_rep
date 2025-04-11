@@ -12,6 +12,7 @@ def reconstruction_loss(x, x_hat):
     """
     return torch.mean((x - x_hat) ** 2)
 
+
 def manifold_constraint_loss(R, M, t=0.1):
     """
     Computes the constraint loss using the similarity matrix.
@@ -22,37 +23,33 @@ def manifold_constraint_loss(R, M, t=0.1):
         t: Temperature scaling factor for contrastive loss
 
     Returns:
-        constraint_l: The constraint loss. 
+        constraint_l: The constraint loss.
     """
     D = R.shape[0]
-    N = D // (M + 1)  # also the batch size technically
+    N = D // (M + 1)  # the number of original time series
 
     loss = 0.0
-    
+
     # Loop over each x_i
     for i in range(N):
-
-        # I NEED TO DOUBLE-CHECK IF THESE ARE CURRENT BY DEBUGGING
-        start_idx = i * (M + 1)  # where the current series masked version start
+        start_idx = i * (M + 1)  # the index of the current og_time series in R
         end_idx = start_idx + M + 1
-        pos_indices = list(range(start_idx, end_idx))
+        pos_indices = list(range(start_idx+1, end_idx)) # the indices of its own masked versions, the positive similarities
 
         positive_similarities = torch.exp(  # getting all the s+ (s') for x_i
             R[start_idx, pos_indices] / t
-        )  # DOUBLE-CHECK IF THESE ARE THE CORRECT ONES
+        )
 
-        negative_indices = [j for j in range(D) if j not in pos_indices]  # s'' for x_i
-        negative_similarities = torch.exp(
-            R[start_idx, negative_indices] / t
-        ) # DOUBLE-CHECK IF start_idx is how we should start
-        # remember ---> s′′∈S\{si}
-
-        numr = positive_similarities.sum()
-        denom = negative_similarities.sum()
-        # contrastive loss for x_i
-        series_loss = torch.log(numr / (denom + 1e-8))  # the 1e-8 is to prevent zero-div
-        loss += series_loss  
-    constraint_l = -(loss/N)  # averaging per sample, and adding that -
+        denom_indices = [j for j in range(D) if j != start_idx] # s'' for x_i
+        denom_val = torch.exp(
+            R[start_idx, denom_indices] / t
+        )
+        denom = denom_val.sum()
+        series_loss = 0
+        for p in positive_similarities:
+            series_loss += torch.log(p/(denom+1e-8))
+        loss += series_loss
+    constraint_l = -(loss / N)  # averaging per sample size, I know the paper doesn't tell us to do this but imma do it anyway
     return constraint_l
 
 
