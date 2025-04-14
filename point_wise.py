@@ -13,7 +13,7 @@ from series_wise import series_wise_similarity
 import torch
 import torch.nn.Functional as F
 
-def point_wise_reconstruction(series_wise_batch, point_wise_batch, tau=0.1):
+def old_point_wise_reconstruction(series_wise_batch, point_wise_batch, tau=0.1):
     """
     Reconstructs the point-wise representation of the original time serise by aggregating 
     point-wise representations from multiple masked series using weights from serise_wise.py
@@ -44,3 +44,40 @@ def point_wise_reconstruction(series_wise_batch, point_wise_batch, tau=0.1):
     
     reconstructed = torch.stack(reconstructed_list, dim = 0)        # final reconstructed shape being: (B, L, d)
     return reconstructed
+
+
+
+
+# the point_wise_reconstruction needed some adjustments, here's the new version that works with the rest of the code: 
+def point_wise_reconstruction(R, z_input,num_masked, tau=0.1):
+    """
+    Reconstruct point-wise features for each original series (no self in aggregation).
+
+    Args:
+        R (Tensor): similarity matrix
+        z_point (Tensor): point-wise representations, encoder_output
+        tau (float): softmax temperature
+
+    Returns:
+        aggregated (Tensor): (B, L, C, D), aggregated point-wise representations
+    """
+    B_total, L, C, D = z_input.shape
+    M_plus_1 = num_masked + 1
+    B = B_total // M_plus_1
+
+    z_flat = z_input  # (B_total, L, C, D)
+    aggregated = []
+
+    for i in range(B): # we are getting the z_i, so iterating for the og time series
+        anchor_idx = i * M_plus_1  # original series index
+        sim_row = R[anchor_idx].clone()
+
+        # exclude self, we don't want it in the softmax calculations
+        sim_row[anchor_idx] = -float('inf')
+        weights = F.softmax(sim_row / tau, dim=0)  # (B_total,)
+
+        # weighted sum of point-wise features, so we just multiply each pointwise with its similarity softmax
+        agg = torch.sum(weights.view(-1, 1, 1, 1) * z_flat, dim=0)  # (L, C, D)
+        aggregated.append(agg)
+
+    return torch.stack(aggregated, dim=0)  # (B, L, C, D)
