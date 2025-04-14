@@ -10,7 +10,7 @@ class SimMTMModel_Forecasting(nn.Module):
             dropout=dropout
         )
         self.projector = projector(d_model*num_channels, output_dim=proj_dim)
-        self.decoder = decoder(d_model, output_dim=num_channels)
+        self.decoder = decoder(d_model*num_channels, output_dim=num_channels)
         self.d_model = d_model
 
     def forward(self, seq_x):
@@ -25,22 +25,21 @@ class SimMTMModel_Forecasting(nn.Module):
         # Encoder
         enc_output = self.encoder(inputs)  # shape: B*(1+num_masked),L,C,d_model
         B_total, L, C, d_model = enc_output.shape
-        enc_output = enc_output.view(B_total, L, -1)  # flatten channels - shape: B*(1+num_masked),L,C*d_model
+        enc_output_f = enc_output.view(B_total, L, -1)  # flatten channels - shape: B*(1+num_masked),L,C*d_model
 
         # Project to series-wise representations
-        series_repr = enc_output.mean(dim=1)  # (N*(M+1), d_model) shape: B*(1+num_masked), C*d_model --> doing this coz paper says the input series_wise_similarity is 1 x d
+        series_repr = enc_output_f.mean(dim=1)  # (N*(M+1), d_model) shape: B*(1+num_masked), C*d_model --> doing this coz paper says the input series_wise_similarity is 1 x d
         series_proj = self.projector(series_repr) # shape: B*(1+num_masked), proj_dim
 
         # Similarity matrix
         R = series_wise_similarity(series_proj) # shape B*(1+num_masked), B*(1+num_masked) --> we get this shape after S*S.T, remember the order of S is [x0, x0_mask1, x0_mask2, ..., xN-1, xN-1_mask1, xN-1_mask2, ...]
 
         # Point-wise reconstruction
-        z_point = enc_output.view(B_total, L, C, d_model)
-        z_point = z_point.view(-1, self.num_masked + 1, L, C,d_model)  # reshape into (B, M+1, L,C, d_model)
-        aggregated = point_wise_reconstruction(R, z_point, tau=0.1) # this isn't working rn
+        reconstructed_z = point_wise_reconstruction(R, enc_output, num_masked=self.num_masked) # (B, L, C, d_model)
+        reconstructed_z = reconstructed_z.view(reconstructed_z.shape[0], L, C * d_model)  # (B, L, C*d_model)
 
         # Decode
-        reconstructed = self.decoder(aggregated)
+        reconstructed = self.decoder(reconstructed_z)
 
         # Compute loss
         original = seq_x
