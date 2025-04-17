@@ -27,7 +27,7 @@ def geometric_masking(seq_x, r=0.5, lm=3, num_views = 3, seed=None):
     lu = int((1 - r) / r * lm)  # mean length of unmasked segments, got the formula from the reference paper
     for view in range(num_views): # for multiple views, multiple layers of masking of the same input
         masked_seq_x = seq_x.clone()
-        mask = np.zeros_like(seq_x)
+        mask = np.zeros_like(seq_x.detach().numpy())
         for b in range(batch_size):
             for j in range(num_channels): # for channel independence
                 pos = 0
@@ -42,7 +42,7 @@ def geometric_masking(seq_x, r=0.5, lm=3, num_views = 3, seed=None):
                     # Unmasked segment
                     unmask_len = np.random.geometric(1 / lu)
                     pos += unmask_len
-        masked_views.append(masked_seq_x)
+        masked_views.append(masked_seq_x.detach().numpy())
         masks.append(mask)
     masked_views = np.concatenate(masked_views, axis=0)
     masks = np.concatenate(masks, axis=0)
