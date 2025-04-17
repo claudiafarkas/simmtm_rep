@@ -124,10 +124,22 @@ for epoch in range(50):
 torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
 
 # fine-tune
+# when fine-tuning cross-domain we need the adapter because the channel numbers don't match 
+class ChannelAdapter(nn.Module):
+    def __init__(self, in_channels=7, out_channels=21):
+        super(ChannelAdapter, self).__init__()
+        self.adapter = nn.Linear(in_channels, out_channels)
+
+    def forward(self, x):
+        # x: (B, L, C), apply adapter to the last dimension
+        return self.adapter(x)
+
+
+
 train_loader_finetune = train_loader
 finetune_model = SimMTMModel(num_channels=num_channels).to(device)
 finetune_model.load_state_dict(torch.load('pretrained_simmtm_model.pth'))  
-
+adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)   # use only if training cross domain
 optimizer = optim.Adam(finetune_model.parameters(), lr=1e-4)
 
 for epoch in range(10):
@@ -136,6 +148,7 @@ for epoch in range(10):
     counter_t = 0
     for seq_x, *_ in train_loader_finetune:
         seq_x = seq_x.float().to(device)
+        seq_x = adapter(seq_x) # use only when training cross domain
         optimizer.zero_grad()
         original, reconstructed, _ = finetune_model(seq_x)
         loss = F.mse_loss(reconstructed, original)  # finetune with L2 only as the paper said
