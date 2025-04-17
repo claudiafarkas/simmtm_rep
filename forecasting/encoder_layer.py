@@ -38,7 +38,7 @@ class VanillaTransformerEncoder(nn.Module):
 
     def forward(self, x):
         x = self.input_linear(x) 
-        x = self.conv_pos_encoder(x)  # add conv-based positional encoding
+        # x = self.conv_pos_encoder(x)  # taking the conv embedding out as the paper doesn't actually mention it and my initial results were different than the paper
         x = self.transformer_encoder(x)
         return x
 
