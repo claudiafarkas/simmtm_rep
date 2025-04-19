@@ -2,95 +2,70 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 
-# classification = no masking, just one series-level vector per input
-class SimMTMModel_Classification(nn.Module):
-    def __init__(self, num_channels, d_model=16, num_classes=5, proj_dim=32, num_masked=3):
-        super(SimMTMModel_Classification, self).__init__()
+
+class SimMTMModelWithResNet(nn.Module):
+    def __init__(self, in_channels, resnet_out_dim=256, proj_dim=32, num_masked=3):
+        super(SimMTMModelWithResNet, self).__init__()
         self.num_masked = num_masked
-        self.d_model = d_model
-        self.num_channels = num_channels
+        self.encoder = ResNetEncoder(in_channels=in_channels)                               # returns (B, resnet_out_dim)
+        self.projector = projector(input_dim=resnet_out_dim, output_dim=proj_dim)
+        self.decoder = build_decoder(input_dim = resnet_out_dim, output_dim=in_channels)
 
-        # Encoder outputs
-        self.encoder = ResNetEncoder(
-            in_channels = num_channels,
-            base_channels = d_model,
-            block_counts = [2, 2, 2]
-        )
+    def forward(self, seq_x):
+        original = seq_x.clone()
+        B, L, C = seq_x.shape
+        seq_x = seq_x.permute(0, 2, 1)  # (B, C, L)
+        print("SEQ_X Size: ",seq_x.shape)
 
-        self.projector = projector(input_dim=7, output_dim=proj_dim)
-        self.decoder = build_decoder(d_model * num_channels, output_dim=num_classes)
-        self.d_model = d_model
-
-
-    def forward(self, seq_x, labels = None):
         # Geometric masking
-        masked_views, masks = geometric_masking(seq_x.cpu())
-        masked_views = torch.tensor(masked_views).float().to(seq_x.device)
-        # shape: (B * (M+1), L, C)
+        masked_views, masks = geometric_masking(seq_x)                                      # expects (B, L, C)
+        masked_views = torch.tensor(masked_views, device = seq_x.device)                    # (B, C, L)
+
+        # Stack masked views
         inputs = torch.cat([
             torch.stack([seq_x[i]] + [masked_views[i * self.num_masked + j] for j in range(self.num_masked)], dim=0)
             for i in range(seq_x.shape[0])
-        ], dim=0)
+        ], dim=0)                                                                           # (B*(M+1), C, L)
 
-        B_total = inputs.shape[0]
-        # B = seq_x.shape[0]
-        M_plus_1 = self.num_masked + 1
-        B = B_total // M_plus_1
+        # Encode
+        enc_output = self.encoder(inputs)                                                   # (B*(M+1), resnet_out_dim)
+        print("Encoder output shape:", enc_output.shape) 
 
-        # Encoder
-        enc_output = self.encoder(inputs.permute(0, 2, 1))      # ResNet expects (B, C, L)
-        enc_output = enc_output.permute(0, 2, 1)                # back to (B_total, L, d_model)
-        print("Encoder output shape:", enc_output.shape)
-        print("Encoder output sample:", enc_output[0]) 
-        # L, D = enc_output.shape[1], enc_output.shape[2]
-        
-        # project to series-wise representation
-        series_repr = enc_output.mean(dim=1)                     # (B_total, d_model)
-        print("series_repr shape:", series_repr.shape)           # Should be (B_total, D_actual)
-        series_proj = self.projector(series_repr)                # (B_total, proj_dim)
-        series_proj = series_proj.view(B, M_plus_1, -1)          # reshape: (B, M+1, proj_dim)
-        
-        # Similarity matrix (per batch)
-        R = torch.stack([                                      
-            series_wise_similarity(series_proj[i]) for i in range(B)
-        ], dim=0)  # (B, M+1, M+1)
+        # Project
+        series_proj = self.projector(enc_output)
+
+        # Similarity matrix
+        R = series_wise_similarity(series_proj.mean(dim=1))
         print("R Size:", R.shape)
-        print("R:", R)
-
-        # point-wise reconstruction 
-        enc_output = enc_output.view(B, M_plus_1, enc_output.shape[1], enc_output.shape[2])  # (B, M+1, L, D)
-        aggregated = point_wise_reconstruction(R, enc_output, tau=0.1, num_masked = self.num_masked)  # (B, L, D)
-
-        # classification of logits
-        pooled = aggregated.mean(dim=1)  # (B, D)
-        logits = self.decoder(pooled)    # (B, num_classes)
-
+        # print("R:", R)
+        enc_output = enc_output.unsqueeze(2)
+        
+        aggregated = point_wise_reconstruction(R, enc_output, num_masked = self.num_masked)  # (B, L, D)
+        print("Aggregation Size (pre squeeze): ", aggregated.shape)
+        aggregated = aggregated.squeeze(2)
+        # print("Aggregated: ", aggregated)
+        print("Aggregation Size (post squeeze): ", aggregated.shape)                                                     
 
         # Decode
         reconstructed = self.decoder(aggregated)
+        # print("Reconstruction: ", reconstructed)
+        print("Reconstructed Size: ", reconstructed.shape)
 
-        i = 0  # pick an example from the batch
-        # original_example = seq_x[i].detach().cpu().numpy()
-        # recon_example = reconstructed[i].detach().cpu().numpy()
+        # classification of logits
+        pooled = aggregated.mean(dim=1)                                                     # (B, D)
+        print("Pooled Size: ", pooled.shape)
+        logits = self.decoder(pooled)  
 
-          # Compute loss
-        original = seq_x
+        # Compute loss
+        # print("Original: ", original)
+        print("Original Size X: ", original.shape)
         total_loss = tot_loss(original, reconstructed, R, self.num_masked, lamb=0.1, t=0.1)
         print("Total loss:", total_loss.item())
 
         return total_loss, reconstructed
 
-        # # Reshape Point-wise reconstruction
-        # reconstructed_z = point_wise_reconstruction(R, enc_output, num_masked=self.num_masked)
-        # # reconstructed_z = reconstructed_z.view(reconstructed_z.shape[0], L, C * d_model)  # (B, L, C*d_model)
-        # # Decode
-        # reconstructed = self.decoder(reconstructed_z)
-        # return seq_x.float(), reconstructed, R
-    
 
-    
 
 # -- copied functions ---
 
@@ -111,17 +86,6 @@ def build_decoder(input_dim, output_dim, hidden_dim = None):
         torch.nn.ReLU(),
         torch.nn.Linear(hidden_dim, output_dim)
     )
-
-
-def apply_decoder(z_hat, decoder):
-    """
-    Applies the decoder.
-    
-    Args:
-        z_hat: the aggregated point-wise time step 
-        decoder (nn.Module): the decoder MLP
-    """
-    return decoder(z_hat)
 
 
 # ENCODER - C
@@ -165,6 +129,7 @@ class Residual1D(torch.nn.Module):
         
 
     def forward(self, x):
+        # print("X:", x)
         out = self.conv1(x)
         print("Shape before conv2:", out.shape)
         out = self.conv2(out)
@@ -185,15 +150,15 @@ class ResNetEncoder(torch.nn.Module):
         
         # initial convolution and max pooling 
         self.inital_conv = torch.nn.Sequential(
-            torch.nn.Conv1d(in_channels, base_channels, kernel_size = 7, stride= 2, padding = 3, bias = False), 
+            torch.nn.Conv1d(in_channels, base_channels, kernel_size = 7, stride= 1, padding = 3, bias = False), 
             torch.nn.BatchNorm1d(base_channels),
             torch.nn.ReLU(inplace = True),
-            torch.nn.MaxPool1d(kernel_size = 3, stride = 2, padding =1)
+            # torch.nn.MaxPool1d(kernel_size = 3, stride = 2, padding =1)
             )
         self.layer1 = self._make_layer(base_channels, base_channels, block_counts[0], stride = 1)                       # step 1: residual blocks - might start with downsampling
-        self.layer2 = self._make_layer(base_channels, base_channels * 2, block_counts[1], stride = 2)                   # step 2: residual blocks - downsampling to 2x the channels
-        self.layer3 = self._make_layer(base_channels * 2 , base_channels * 4 , block_counts[2], stride = 2)             # step 3: residual blocks - downsampling to 4x the channels
-        self.global_avg_pooling = torch.nn.AdaptiveAvgPool1d(1)                                                         # helps compress the time dimension to be 1 vector / series
+        self.layer2 = self._make_layer(base_channels, base_channels * 2, block_counts[1], stride = 1)                   # step 2: residual blocks - downsampling to 2x the channels
+        self.layer3 = self._make_layer(base_channels * 2 , base_channels * 4 , block_counts[2], stride = 1)             # step 3: residual blocks - downsampling to 4x the channels
+        # self.global_avg_pooling = torch.nn.AdaptiveAvgPool1d(1)                                                         # helps compress the time dimension to be 1 vector / series
 
     # helper function to build residual blocks
     def _make_layer(self, in_channels, out_channels, blocks, stride):
@@ -237,7 +202,7 @@ def projector(input_dim, hidden_dim = None, output_dim = None):
 
 
 # GEOMETRIC MASKING
-def geometric_masking(seq_x, r=0.5, lm=3, num_views = 3, seed=None):
+def geometric_masking(seq_x: torch.Tensor, r=0.5, lm=3, num_views = 3, seed=None):
     """
     Apply geometric masking to the input sequence.
     Got the formula for geometric masking from 'A TRANSFORMER-BASED FRAMEWORK FOR MULTIVARIATE TIME SERIES REPRESENTATION LEARNING'
@@ -256,21 +221,24 @@ def geometric_masking(seq_x, r=0.5, lm=3, num_views = 3, seed=None):
     if seed is not None:
         np.random.seed(seed)
 
-    batch_size, seq_len, num_channels = seq_x.shape
+    # batch_size, seq_len, num_channels = seq_x.shape
+    B, L, C = seq_x.shape
+    lu = max(1, int((1 - r)/ r * lm))
+
     masked_views = []
     masks = []
 
-    lu = int((1 - r) / r * lm)  # mean length of unmasked segments, got the formula from the reference paper
-    for view in range(num_views): # for multiple views, multiple layers of masking of the same input
+    # lu = int((1 - r) / r * lm)  # mean length of unmasked segments, got the formula from the reference paper
+    for _ in range(num_views): # for multiple views, multiple layers of masking of the same input
         masked_seq_x = seq_x.clone()
         mask = np.zeros_like(seq_x.detach().numpy())
-        for b in range(batch_size):
-            for j in range(num_channels): # for channel independence
+        for b in range(B):
+            for j in range(C): # for channel independence
                 pos = 0
-                while pos < seq_len:
+                while pos < L:
                     # Masked segment
                     mask_len = np.random.geometric(1 / lm)
-                    mask_len = min(mask_len, seq_len - pos)
+                    mask_len = min(mask_len, L - pos)
                     masked_seq_x[b, pos:pos + mask_len, j] = 0
                     mask[b, pos:pos + mask_len, j] = 1
                     pos += mask_len
@@ -287,7 +255,7 @@ def geometric_masking(seq_x, r=0.5, lm=3, num_views = 3, seed=None):
 
 
 # POINT WISE
-def point_wise_reconstruction(R, z_input,num_masked, tau=0.1):
+def point_wise_reconstruction(R, z_input, num_masked, tau=0.1):
     """
     Reconstruct point-wise features for each original series (no self in aggregation).
 
@@ -326,14 +294,12 @@ def point_wise_reconstruction(R, z_input,num_masked, tau=0.1):
     M_plus_1 = num_masked + 1
     B = B_total // M_plus_1
 
-    z_flat = z_input  # (B_total, L, C, D)
+    z_flat = z_input  # (B, M+1, L, D)
     aggregated = []
 
     for i in range(B): # we are getting the z_i, so iterating for the og time series
         anchor_idx = i * M_plus_1  # original series index
         sim_row = R[anchor_idx].clone()
-
-        # exclude self, we don't want it in the softmax calculations
         sim_row[anchor_idx] = -float('inf')
         weights = F.softmax(sim_row / tau, dim=0)  # (B_total,)
 
@@ -443,29 +409,15 @@ def tot_loss(x, x_hat, R, M, lamb, t):
     return l_reconstruction + lamb * l_constraint
 
 
-
-
 if __name__ == "__main__":
-    import torch
-    from torch import nn
-    import matplotlib.pyplot as plt
-
     # Dummy inputs
-    B, L ,C = 32, 100, 1  # batch size, length, channels
+    B, L ,C = 128, 100, 7  # batch size, length, channels
     dummy_input = torch.randn(B, L, C)
-    # dummy_input.shape[0] >= 2
 
-    model = SimMTMModel_Classification(num_channels = C)
-    model.eval()  # or model.train() for gradient tracking
+    model = SimMTMModelWithResNet(in_channels = C)
+    model.eval()
 
-    with torch.no_grad():  # skip if you want gradients
+    with torch.no_grad():  
         loss, recon = model(dummy_input)
 
     print("Loss:", loss.item())
-    # Plot original vs reconstructed for sanity check
-    # i = 0
-    # plt.plot(dummy_input[i].squeeze().numpy(), label="Original")
-    # plt.plot(recon[i].squeeze().numpy(), label="Reconstructed")
-    # plt.legend()
-    # plt.title("Debug: Original vs Reconstructed")
-    # plt.show()
