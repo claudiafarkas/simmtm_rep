@@ -10,7 +10,7 @@
 # --------------------------------------------------------------------------------------------------------------------------
 import torch
 
-def build_decoder(input_dim, output_dim, hidden_dim = None):
+def decoder(input_dim, output_dim, hidden_dim = None):
     """
     Builds the shared decoder MLP.
     
@@ -26,14 +26,3 @@ def build_decoder(input_dim, output_dim, hidden_dim = None):
         torch.nn.ReLU(),
         torch.nn.Linear(hidden_dim, output_dim)
     )
-
-
-def apply_decoder(z_hat, decoder):
-    """
-    Applies the decoder.
-    
-    Args:
-        z_hat: the aggregated point-wise time step 
-        decoder (nn.Module): the decoder MLP
-    """
-    return decoder(z_hat)
