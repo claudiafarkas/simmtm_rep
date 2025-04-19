@@ -1,3 +1,5 @@
+import torch 
+
 def series_wise_similarity(S):
     """
     Calculate pairwise cosine similarity matrix for series-wise representations.
