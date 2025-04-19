@@ -1,3 +1,5 @@
+import torch
+
 
 def reconstruction_loss(x, x_hat):
     """
