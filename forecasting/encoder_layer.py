@@ -1,3 +1,6 @@
+import torch.nn as nn
+import torch
+
 class ConvolutionalPositionalEncoding(nn.Module): # they don't mention anything about positional encoding in the paper but I'm adding one that's similar to Wav2ev2's
     def __init__(self, dim, kernel, dropout):
         super(ConvolutionalPositionalEncoding, self).__init__()
@@ -24,7 +27,7 @@ class VanillaTransformerEncoder(nn.Module):
                  kernel_size=3):
         super(VanillaTransformerEncoder, self).__init__()
         self.input_linear = nn.Linear(num_channels, dim)
-        self.conv_pos_encoder = ConvolutionalPositionalEncoding(dim, kernel_size=kernel_size, dropout=dropout)
+        self.conv_pos_encoder = ConvolutionalPositionalEncoding(dim, kernel=kernel_size, dropout=dropout)
 
         encoder_layer = nn.TransformerEncoderLayer( # a simple vanill;a transformer
             d_model=dim,
@@ -43,7 +46,7 @@ class VanillaTransformerEncoder(nn.Module):
         return x
 
 
-class ChannelIndependentTransformer(nn.Module):
+class ChannelIndependentTransformer(nn.Module):  # paper mentions that the transformers encoder is channel independent, so each channel is passed into the encoder individually
     def __init__(self, num_channels, dim, n_head, n_layers, dim_ff=512, dropout=0.1, kernel_size=3):
         super(ChannelIndependentTransformer, self).__init__()
         self.encoders = nn.ModuleList([
