@@ -1,16 +1,44 @@
-from torch.utils.data import random_split
-from data_factory import data_provider
-import numpy as np
-import numpy as np
+from simmtm_rep.forecasting.data_loader.data_factory import data_provider
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from simmtm_rep.common_building_blocks.masking import geometric_masking
+from simmtm_rep.common_building_blocks.mlp_decoder import decoder
+from simmtm_rep.common_building_blocks.mlp_projector import projector
+from simmtm_rep.common_building_blocks.loss_functions import tot_loss
+from simmtm_rep.common_building_blocks.point_wise import point_wise_reconstruction
+from simmtm_rep.common_building_blocks.series_wise import series_wise_similarity
+from simmtm_rep.forecasting.encoder_layer import ChannelIndependentTransformer
 
-class Args:
+# for cross_domain training we need to load the weather data
+class Args1:
+    def __init__(self):
+        self.data = 'Weather'  # Using Dataset_weather
+        self.root_path = '/home/kristal/Desktop/Pycharm/pythonProject/simmtm_rep/forecasting/dataset/weather/'
+        self.data_path = 'weather.csv'
+        self.seq_len = 96
+        self.label_len = 48
+        self.pred_len = 48
+        self.features = 'M'
+        self.target = 'OT'
+        self.embed = 'timeF'
+        self.freq = 't'
+        self.task_name = 'forecasting'  # or 'classification' if needed
+        self.batch_size = 32
+        self.num_workers = 0
+        self.seasonal_patterns = None
+
+args1 = Args1()
+
+# Get train data and loader for pre-training for cross-domain
+train_dataset, train_loader = data_provider(args1, flag='train')
+
+# loading the ETTm1 data for cross-domain fine-tuning OR in-domain training
+class Args2:
     def __init__(self):
         self.data = 'ETTm1'  # Using Dataset_ETT_minute
-        self.root_path = '/home/kristal/Downloads/dataset/ETT-small/'
+        self.root_path = '/home/kristal/Desktop/Pycharm/pythonProject/simmtm_rep/forecasting/dataset/ETT-small'
         self.data_path = 'ETTm1.csv'
         self.seq_len = 96
         self.label_len = 48
@@ -24,10 +52,11 @@ class Args:
         self.num_workers = 0
         self.seasonal_patterns = None
 
-args = Args()
+args2 = Args2()
 
-# Get train data and loader
-train_dataset, train_loader = data_provider(args, flag='train')
+# For cross-domain this is our fine-tuning dataset, for in-domain it's both the cross and in-domain training
+f_train_dataset, f_train_loader = data_provider(args2, flag='train')
+
 
 class SimMTMModel(nn.Module):
     def __init__(self, num_channels, d_model=16, n_head=4, n_layers=2, proj_dim=32, num_masked=3, dropout=0.1):
@@ -59,7 +88,7 @@ class SimMTMModel(nn.Module):
         B_total, L, C, d_model = enc_output.shape
         enc_output_f = enc_output.view(B_total, L, -1)  # flatten channels
         # Project to series-wise representations
-        series_repr = enc_output_f.mean(dim=1)  # (N*(M+1), d_model)
+        series_repr = enc_output_f.mean(dim=1) # (N*(M+1), d_model)
         series_proj = self.projector(series_repr)
 
         # Similarity matrix
@@ -85,9 +114,12 @@ class SimMTMModel(nn.Module):
             mae = F.l1_loss(reconstructed, original, reduction='mean').item()
         return mse, mae
 
+task = 'in_domain' # this is either 'in_domain' or 'cross_domain'
+if task == 'in_domain':
+    train_loader = f_train_loader
+    train_dataset = f_train_dataset
 
-
-sample_batch = next(iter(train_loader))
+sample_batch = next(iter(train_loader)) # --> the weather data for the cross-domain task
 seq_x = sample_batch[0]  # assuming (seq_x, _, _) format
 num_channels = seq_x.shape[-1]
 
@@ -109,7 +141,7 @@ for epoch in range(50):
         total_loss += loss.item()
         counter_t += 1
 
-    # evaluation
+    # Evaluation
     model.eval()
     total_mse, total_mae = 0.0, 0.0
     counter = 0
@@ -120,12 +152,11 @@ for epoch in range(50):
         total_mae += mae
         counter += 1
 
-    print(f"Pretrain Epoch [{epoch + 1}/50] | Avg Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
+    print(f"Pretrain Epoch [{epoch + 1}/50] | Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
 torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
 
-# fine-tune
-# when fine-tuning cross-domain we need the adapter because the channel numbers don't match 
-class ChannelAdapter(nn.Module):
+
+class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz the channel numbers don't always match between different datasets
     def __init__(self, in_channels=7, out_channels=21):
         super(ChannelAdapter, self).__init__()
         self.adapter = nn.Linear(in_channels, out_channels)
@@ -135,11 +166,12 @@ class ChannelAdapter(nn.Module):
         return self.adapter(x)
 
 
-
-train_loader_finetune = train_loader
+# fine-tune
+train_loader_finetune = f_train_loader
 finetune_model = SimMTMModel(num_channels=num_channels).to(device)
-finetune_model.load_state_dict(torch.load('pretrained_simmtm_model.pth'))  
-adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)   # use only if training cross domain
+finetune_model.load_state_dict(torch.load('pretrained_simmtm_model.pth'))  # Start from pretrained weights, change the name of the model depending on what u want to load
+if task != 'in_domain': # we need an adapter for weather ---> ETTm1 channel number adaptation
+    adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)
 optimizer = optim.Adam(finetune_model.parameters(), lr=1e-4)
 
 for epoch in range(10):
@@ -148,14 +180,14 @@ for epoch in range(10):
     counter_t = 0
     for seq_x, *_ in train_loader_finetune:
         seq_x = seq_x.float().to(device)
-        seq_x = adapter(seq_x) # use only when training cross domain
+        if task != 'in_domain':
+            seq_x = adapter(seq_x)
         optimizer.zero_grad()
         original, reconstructed, _ = finetune_model(seq_x)
-        loss = F.mse_loss(reconstructed, original)  # finetune with L2 only as the paper said
+        loss = F.mse_loss(reconstructed, original)  # finetune with L2 only
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
         counter_t +=1
 
-    print(f"Finetune Epoch [{epoch + 1}/10] | Avg Loss: {total_loss/counter_t:.4f}")
-
+    print(f"Finetune Epoch [{epoch + 1}/10] | Avg MSE Loss: {total_loss/counter_t:.4f}")
