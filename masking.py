@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 
 def geometric_masking(seq_x, r=0.5, lm=3, num_views = 3, seed=None):
     """
