@@ -32,8 +32,8 @@ class Args1:
 args1 = Args1()
 
 # Get train data and loader for pre-training for cross-domain
-train_dataset, train_loader = data_provider(args1, flag='train')
-
+train_dataset, train_loader = data_provider(args1, flag='train') # for pretraining cross-domain, 78% of the data
+t_train_dataset, t_train_loader = data_provider(args1, flag='test') # for evaluating the cross-domain pretraining, 22% of the data
 # loading the ETTm1 data for cross-domain fine-tuning OR in-domain training
 class Args2:
     def __init__(self):
@@ -54,9 +54,10 @@ class Args2:
 
 args2 = Args2()
 
-# For cross-domain this is our fine-tuning dataset, for in-domain it's both the cross and in-domain training
-f_train_dataset, f_train_loader = data_provider(args2, flag='train')
-
+# For cross-domain this is our fine-tuning dataset, for in-domain it's both the pretraining and finetuning dataset
+f_train_dataset, f_train_loader = data_provider(args2, flag='train') # for pretraining in-domain, 75% of the data
+fv_train_dataset, fv_train_loader = data_provider(args2, flag='val') # for fine-tuning, 25% of the data
+ft_train_dataset, ft_train_loader = data_provider(args2, flag='test') # for evaluation, 25 % of the data but batch size 1 instead of 32
 
 class SimMTMModel(nn.Module):
     def __init__(self, num_channels, d_model=16, n_head=4, n_layers=2, proj_dim=32, num_masked=3, dropout=0.1):
@@ -118,6 +119,8 @@ task = 'in_domain' # this is either 'in_domain' or 'cross_domain'
 if task == 'in_domain':
     train_loader = f_train_loader
     train_dataset = f_train_dataset
+    t_train_loader = ft_train_loader
+    t_train_dataset = ft_train_dataset
 
 sample_batch = next(iter(train_loader)) # --> the weather data for the cross-domain task
 seq_x = sample_batch[0]  # assuming (seq_x, _, _) format
@@ -128,32 +131,32 @@ model = SimMTMModel(num_channels=num_channels).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 #pre-training
-for epoch in range(50):
-    model.train()
-    total_loss = 0.0
-    counter_t = 0
-    for seq_x, *_ in train_loader:
-        seq_x = seq_x.float().to(device)
-        optimizer.zero_grad()
-        loss = model.training_step(seq_x)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-        counter_t += 1
-
-    # Evaluation
-    model.eval()
-    total_mse, total_mae = 0.0, 0.0
-    counter = 0
-    for seq_x, *_ in train_loader:
-        seq_x = seq_x.float().to(device)
-        mse, mae = model.evaluate_step(seq_x)
-        total_mse += mse
-        total_mae += mae
-        counter += 1
-
-    print(f"Pretrain Epoch [{epoch + 1}/50] | Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
-torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
+# for epoch in range(50):
+#     model.train()
+#     total_loss = 0.0
+#     counter_t = 0
+#     for seq_x, *_ in train_loader:
+#         seq_x = seq_x.float().to(device)
+#         optimizer.zero_grad()
+#         loss = model.training_step(seq_x)
+#         loss.backward()
+#         optimizer.step()
+#         total_loss += loss.item()
+#         counter_t += 1
+#
+#     # Evaluation
+#     model.eval()
+#     total_mse, total_mae = 0.0, 0.0
+#     counter = 0
+#     for seq_x, *_ in t_train_loader:
+#         seq_x = seq_x.float().to(device)
+#         mse, mae = model.evaluate_step(seq_x)
+#         total_mse += mse
+#         total_mae += mae
+#         counter += 1
+#
+#     print(f"Pretrain Epoch [{epoch + 1}/50] | Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
+# torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
 
 
 class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz the channel numbers don't always match between different datasets
@@ -167,9 +170,8 @@ class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz 
 
 
 # fine-tune
-train_loader_finetune = f_train_loader
 finetune_model = SimMTMModel(num_channels=num_channels).to(device)
-finetune_model.load_state_dict(torch.load('pretrained_simmtm_model.pth'))  # Start from pretrained weights, change the name of the model depending on what u want to load
+finetune_model.load_state_dict(torch.load('ettm1_simmtm_model.pth'))  # Start from pretrained weights, change the name of the model depending on what u want to load
 if task != 'in_domain': # we need an adapter for weather ---> ETTm1 channel number adaptation
     adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)
 optimizer = optim.Adam(finetune_model.parameters(), lr=1e-4)
@@ -178,7 +180,7 @@ for epoch in range(10):
     finetune_model.train()
     total_loss = 0.0
     counter_t = 0
-    for seq_x, *_ in train_loader_finetune:
+    for seq_x, *_ in fv_train_loader:
         seq_x = seq_x.float().to(device)
         if task != 'in_domain':
             seq_x = adapter(seq_x)
@@ -189,5 +191,19 @@ for epoch in range(10):
         optimizer.step()
         total_loss += loss.item()
         counter_t +=1
+    # Evaluation
+    finetune_model.eval()
+    total_mse, total_mae = 0.0, 0.0
+    counter = 0
+    for seq_x, *_ in ft_train_loader:
+        seq_x = seq_x.float().to(device)
+        if task != 'in_domain':
+            seq_x = adapter(seq_x)
+        mse, mae = finetune_model.evaluate_step(seq_x)
+        total_mse += mse
+        total_mae += mae
+        counter += 1
 
-    print(f"Finetune Epoch [{epoch + 1}/10] | Avg MSE Loss: {total_loss/counter_t:.4f}")
+    print(
+        f"Finetune Epoch [{epoch + 1}/10] | Loss: {total_loss / counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
+
