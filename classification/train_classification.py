@@ -60,18 +60,20 @@ class SimMTMModelWithResNet(nn.Module):
         seq_x = seq_x.to(dtype=torch.float32, device=seq_x.device)
         original = seq_x.clone()
         B, L, C = seq_x.shape
-        seq_x = seq_x.permute(0, 2, 1)  # (B, C, L)
-        # print("SEQ_X Size: ",seq_x.shape)
-
+        
         # Geometric masking
         masked_views, masks = geometric_masking(seq_x)                                      # expects (B, L, C)
-        # masked_views = torch.from_numpy(masked_views, device = seq_x.device)                    # (B, C, L)
-        masked_views = torch.from_numpy(masked_views).float().to(seq_x.device)
+        seq_x = seq_x.permute(0, 2, 1)                                                      # (B, C, L)
+        # print("SEQ_X Size: ",seq_x.shape)
 
+        # masked_views = torch.from_numpy(masked_views, device = seq_x.device)                    # (B, C, L)
+        # masked_views = torch.from_numpy(masked_views).float().to(seq_x.device)
+        masked_views = torch.from_numpy(masked_views).float().to(seq_x.device).permute(0,2,1)
+        
         # Stack masked views
         inputs = torch.cat([
             torch.stack([seq_x[i]] + [masked_views[i * self.num_masked + j] for j in range(self.num_masked)], dim=0)
-            for i in range(seq_x.shape[0])
+            for i in range(B)
         ], dim=0)                                                                           # (B*(M+1), C, L)
         
         inputs = inputs.to(dtype=torch.float32, device=seq_x.device)
@@ -133,7 +135,7 @@ X_test, y_test = epi["test"]["samples"], epi["test"]["labels"]        # final ev
 num_classes = int(torch.unique(y_pre).numel())
 
 def make_loader(X, y, batch_size, shuffle):
-    X = normalize_data(X).permute(0,2,1)
+    X = normalize_data(X) #.permute(0,2,1)
     return dataloader(X, y, batch_size, shuffle = shuffle)
 
 pretrain_loader = make_loader(X_pre,  y_pre, classArgs.cls_pretrain_batch_size, True)
@@ -141,7 +143,9 @@ finetune_loader = make_loader(X_fine, y_fine, classArgs.cls_finetune_batch_size,
 test_loader = make_loader(X_test, y_test, classArgs.cls_finetune_batch_size, False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-C = X_pre.shape[1]
+# C = X_pre.shape[1]
+C = X_pre.shape[2]    # this is C
+
 
 
 #-------- Pre-Training --------
@@ -252,7 +256,7 @@ if torch.backends.mps.is_available():       # helps run on macbook
     device = torch.device("mps")
 else:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-C = X_pre.shape[1]
+C = X_pre.shape[2]
 
 
 #-------- Pre-Training --------
