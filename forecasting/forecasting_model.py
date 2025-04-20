@@ -131,32 +131,32 @@ model = SimMTMModel(num_channels=num_channels).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 #pre-training
-# for epoch in range(50):
-#     model.train()
-#     total_loss = 0.0
-#     counter_t = 0
-#     for seq_x, *_ in train_loader:
-#         seq_x = seq_x.float().to(device)
-#         optimizer.zero_grad()
-#         loss = model.training_step(seq_x)
-#         loss.backward()
-#         optimizer.step()
-#         total_loss += loss.item()
-#         counter_t += 1
-#
-#     # Evaluation
-#     model.eval()
-#     total_mse, total_mae = 0.0, 0.0
-#     counter = 0
-#     for seq_x, *_ in t_train_loader:
-#         seq_x = seq_x.float().to(device)
-#         mse, mae = model.evaluate_step(seq_x)
-#         total_mse += mse
-#         total_mae += mae
-#         counter += 1
-#
-#     print(f"Pretrain Epoch [{epoch + 1}/50] | Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
-# torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
+for epoch in range(50):
+    model.train()
+    total_loss = 0.0
+    counter_t = 0
+    for seq_x, *_ in train_loader:
+        seq_x = seq_x.float().to(device)
+        optimizer.zero_grad()
+        loss = model.training_step(seq_x)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        counter_t += 1
+
+    # Evaluation
+    model.eval()
+    total_mse, total_mae = 0.0, 0.0
+    counter = 0
+    for seq_x, *_ in t_train_loader:
+        seq_x = seq_x.float().to(device)
+        mse, mae = model.evaluate_step(seq_x)
+        total_mse += mse
+        total_mae += mae
+        counter += 1
+
+    print(f"Pretrain Epoch [{epoch + 1}/50] | Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
+torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
 
 
 class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz the channel numbers don't always match between different datasets
@@ -171,7 +171,7 @@ class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz 
 
 # fine-tune
 finetune_model = SimMTMModel(num_channels=num_channels).to(device)
-finetune_model.load_state_dict(torch.load('ettm1_simmtm_model.pth'))  # Start from pretrained weights, change the name of the model depending on what u want to load
+finetune_model.load_state_dict(torch.load('pretrained_simmtm_model.pth'))  # Start from pretrained weights, change the name of the model depending on what u want to load
 if task != 'in_domain': # we need an adapter for weather ---> ETTm1 channel number adaptation
     adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)
 optimizer = optim.Adam(finetune_model.parameters(), lr=1e-4)
