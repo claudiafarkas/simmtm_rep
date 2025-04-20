@@ -1,11 +1,11 @@
-# USAGE IN PAPER DESCRIPTION:
-# Purpose: The encoder extracts features from the time series (uses 1D-ResNet because 1D conv layers are best for time-series type data e.g EEG classification)
-# & according to the paper, using 1DResNet in the masked pre-training framework increases classificatoin accuracy.
+# # USAGE IN PAPER DESCRIPTION:
+# # Purpose: The encoder extracts features from the time series (uses 1D-ResNet because 1D conv layers are best for time-series type data e.g EEG classification)
+# # & according to the paper, using 1DResNet in the masked pre-training framework increases classificatoin accuracy.
 
 import torch
 import torch.nn.functional as F
 
-
+# ENCODER - C
 class Conv1D(torch.nn.Module):
     """
     Main use case is used to extract features (point-wise temporal) from the time-series data like EEG.
@@ -16,15 +16,14 @@ class Conv1D(torch.nn.Module):
         
         self.conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding, bias = False)       # applies 1D conv on the input
         self.bn = torch.nn.BatchNorm1d(out_channels)                                                             # normalizes for training
-        self.relu = torch.nn.ReLU(inplace = True)                                                                # applies relu activation
+        self.relu = torch.nn.ReLU(inplace = False)                                                                # applies relu activation
         
 
     def forward(self, x):                                                                                        # put its together to put conv, batch norm then relu
         out = self.conv(x)
-        out = self.bn(x)
+        out = self.bn(out)
         return self.relu(out)
-    
-    
+
 
 class Residual1D(torch.nn.Module):
     """
@@ -37,7 +36,7 @@ class Residual1D(torch.nn.Module):
         super(Residual1D, self).__init__()
         
         self.conv1 = Conv1D(in_channels, out_channels, kernel_size, stride, padding)                            # 1st conv block; no downsampling
-        self.conv2 = Conv1D(out_channels, in_channels, kernel_size, stride = 1, padding = padding)              # 2nd conv block; maintinas the dimension
+        self.conv2 = Conv1D(out_channels, out_channels, kernel_size, stride = 1, padding = padding)              # 2nd conv block; maintinas the dimension
         self.downsample = None
     
         if in_channels != out_channels or stride != 1:                                                          # identifies if input and output dimensions match, if not then adjust 
@@ -47,14 +46,15 @@ class Residual1D(torch.nn.Module):
         
 
     def forward(self, x):
+        # print("X:", x)
         out = self.conv1(x)
-        out = self.conv2(x)
+        # print("Shape before conv2:", out.shape)
+        out = self.conv2(out)
         if self.downsample is not None:
             x = self.downsample(x)
-        out += x
+        out + x
         return F.relu(out)
     
-
 
 class ResNetEncoder(torch.nn.Module):
     """
@@ -66,16 +66,16 @@ class ResNetEncoder(torch.nn.Module):
         super(ResNetEncoder, self).__init__()
         
         # initial convolution and max pooling 
-        self.inital_conv == torch.nn.Sequential(
-            torch.nn.Conv1d(in_channels, base_channels, kernel_size = 7, stride= 2, padding = 3, bias = False), 
+        self.inital_conv = torch.nn.Sequential(
+            torch.nn.Conv1d(in_channels, base_channels, kernel_size = 7, stride= 1, padding = 3, bias = False), 
             torch.nn.BatchNorm1d(base_channels),
             torch.nn.ReLU(inplace = True),
-            torch.nn.MaxPool(kernel_size = 3, stride = 2, padding =1)
+            # torch.nn.MaxPool1d(kernel_size = 3, stride = 2, padding =1)
             )
         self.layer1 = self._make_layer(base_channels, base_channels, block_counts[0], stride = 1)                       # step 1: residual blocks - might start with downsampling
-        self.layer2 = self._make_layer(base_channels, base_channels * 2, block_counts[1], stride = 2)                   # step 2: residual blocks - downsampling to 2x the channels
-        self.layer3 = self._make_layer(base_channels * 2 , base_channels * 4 , block_counts[2], stride = 2)             # step 3: residual blocks - downsampling to 4x the channels
-        self.global_avg_pooling = torch.nn.AdaptiveAvgPool1d(1)                                                         # helps compress the time dimension to be 1 vector / series
+        self.layer2 = self._make_layer(base_channels, base_channels * 2, block_counts[1], stride = 1)                   # step 2: residual blocks - downsampling to 2x the channels
+        self.layer3 = self._make_layer(base_channels * 2 , base_channels * 4 , block_counts[2], stride = 1)             # step 3: residual blocks - downsampling to 4x the channels
+        # self.global_avg_pooling = torch.nn.AdaptiveAvgPool1d(1)                                                         # helps compress the time dimension to be 1 vector / series
 
     # helper function to build residual blocks
     def _make_layer(self, in_channels, out_channels, blocks, stride):
@@ -86,15 +86,13 @@ class ResNetEncoder(torch.nn.Module):
             return torch.nn.Sequential(* layers)
     
 
-    def forward(self, x):
-        x = self.initial_conv(x)
+    def forward(self, x):        # B, C, L
+        # x = x.permute(0, 2, 1)      # B, L C -> B, C L
+        x = self.inital_conv(x)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        pooled = self.global_avg_pooling(x)
-        flattened = pooled.view(pooled.size(0), -1)
-        return flattened
-
-    
-        
-        
+        x = x.permute(0, 2, 1)      # back to B, L, C
+        # pooled = self.global_avg_pooling(x)
+        # flattened = pooled.view(pooled.size(0), -1)
+        return x
