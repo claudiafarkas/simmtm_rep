@@ -174,6 +174,8 @@ forecasting_model.encoder.load_state_dict(torch.load("simmtm_encoder.pth"))
 forecasting_model.encoder.eval()
 if task != 'in_domain': # we need an adapter for weather ---> ETTm1 channel number adaptation
     adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)
+    for param in adapter.parameters():
+        param.requires_grad = False
 optimizer = optim.Adam(forecasting_model.parameters(), lr=1e-4)
 loss_fn = nn.MSELoss() # fine tuning is done only using the L2 loss
 
