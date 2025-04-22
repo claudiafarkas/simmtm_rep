@@ -32,8 +32,8 @@ class Args1:
 args1 = Args1()
 
 # Get train data and loader for pre-training for cross-domain
-train_dataset, train_loader = data_provider(args1, flag='train') # for pretraining cross-domain, 78% of the data
-t_train_dataset, t_train_loader = data_provider(args1, flag='test') # for evaluating the cross-domain pretraining, 22% of the data
+train_dataset, train_loader = data_provider(args1, flag='train')
+
 # loading the ETTm1 data for cross-domain fine-tuning OR in-domain training
 class Args2:
     def __init__(self):
@@ -107,34 +107,40 @@ class SimMTMModel(nn.Module):
         total_loss = tot_loss(original, reconstructed, R, self.num_masked, lamb=0.1, t=0.02)
         return total_loss
 
-    def evaluate_step(self, seq_x):
-        self.eval()
-        with torch.no_grad():
-            original, reconstructed, _ = self(seq_x)
-            mse = F.mse_loss(reconstructed, original, reduction='mean').item()
-            mae = F.l1_loss(reconstructed, original, reduction='mean').item()
-        return mse, mae
+# Forecasting head  ---> the paper doesn't mention anything about this, had to look at one of their reference papers: Autoformer: Decomposition Transformers with Auto-Correlation for Long-Term Series Forecasting
+class ForecastingModel(nn.Module):
+    def __init__(self, encoder, seq_len, pred_len, d_model, num_channels):
+        super().__init__()
+        self.encoder = encoder
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+        self.linear = nn.Linear(seq_len * d_model * num_channels, pred_len * num_channels) # we are basically trying to predict 'the most probable length-O series in the future given the past length-I series'
+        self.num_channels = num_channels
 
-task = 'in_domain' # this is either 'in_domain' or 'cross_domain'
+    def forward(self, seq_x):
+        with torch.no_grad(): # feezing any grad updates
+            enc_output = self.encoder(seq_x)  # getting the point-wise rep
+        B, L, C, d_model = enc_output.shape
+        flat = enc_output.view(B, -1)
+        pred = self.linear(flat) # in a way we are projecting the encoder output to the prediction length-O series
+        return pred.view(B, self.pred_len, self.num_channels)
+
+# Training pretraining model
+task = 'cross_domain' # this is either 'in_domain' or 'cross_domain'
 if task == 'in_domain':
     train_loader = f_train_loader
     train_dataset = f_train_dataset
-    t_train_loader = ft_train_loader
-    t_train_dataset = ft_train_dataset
-
-sample_batch = next(iter(train_loader)) # --> the weather data for the cross-domain task
-seq_x = sample_batch[0]  # assuming (seq_x, _, _) format
-num_channels = seq_x.shape[-1]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+sample_batch = next(iter(train_loader))[0]
+num_channels = sample_batch.shape[-1]
 model = SimMTMModel(num_channels=num_channels).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-#pre-training
+# Pre training on the training set of ETTm1 or weather data depending on the setting
 for epoch in range(50):
     model.train()
-    total_loss = 0.0
-    counter_t = 0
+    total_loss = 0
     for seq_x, *_ in train_loader:
         seq_x = seq_x.float().to(device)
         optimizer.zero_grad()
@@ -142,22 +148,9 @@ for epoch in range(50):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-        counter_t += 1
+    print(f"Pretraining Epoch {epoch+1}: Loss = {total_loss / len(train_loader):.4f}")
 
-    # Evaluation
-    model.eval()
-    total_mse, total_mae = 0.0, 0.0
-    counter = 0
-    for seq_x, *_ in t_train_loader:
-        seq_x = seq_x.float().to(device)
-        mse, mae = model.evaluate_step(seq_x)
-        total_mse += mse
-        total_mae += mae
-        counter += 1
-
-    print(f"Pretrain Epoch [{epoch + 1}/50] | Loss: {total_loss/counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
-torch.save(model.state_dict(), 'pretrained_simmtm_model.pth')
-
+torch.save(model.encoder.state_dict(), "simmtm_encoder.pth") # update the model name based on the setting 'in_domain' or 'cross_domain'
 
 class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz the channel numbers don't always match between different datasets
     def __init__(self, in_channels=7, out_channels=21):
@@ -165,45 +158,55 @@ class ChannelAdapter(nn.Module): # the adapter is for cross-domain training coz 
         self.adapter = nn.Linear(in_channels, out_channels)
 
     def forward(self, x):
-        # x: (B, L, C), apply adapter to the last dimension
+        # x: (B, L, C), applies adapter to the last dimension
         return self.adapter(x)
 
+# Forecasting phase 
+forecasting_model = ForecastingModel(
+    encoder=ChannelIndependentTransformer(num_channels=num_channels, dim=16, n_head=4, n_layers=2).to(device),
+    seq_len=96, # given in the dataloader
+    pred_len=48, # given in the dataloader
+    d_model=16,
+    num_channels=num_channels
+).to(device)
 
-# fine-tune
-finetune_model = SimMTMModel(num_channels=num_channels).to(device)
-finetune_model.load_state_dict(torch.load('pretrained_simmtm_model.pth'))  # Start from pretrained weights, change the name of the model depending on what u want to load
+forecasting_model.encoder.load_state_dict(torch.load("simmtm_encoder.pth"))
+forecasting_model.encoder.eval()
 if task != 'in_domain': # we need an adapter for weather ---> ETTm1 channel number adaptation
     adapter = ChannelAdapter(in_channels=7, out_channels=21).to(device)
-optimizer = optim.Adam(finetune_model.parameters(), lr=1e-4)
+    for param in adapter.parameters():
+        param.requires_grad = False
+optimizer = optim.Adam(forecasting_model.parameters(), lr=1e-4)
+loss_fn = nn.MSELoss() # fine tuning is done only using the L2 loss
 
+# Fine tuning on the validation set of ETTm1
 for epoch in range(10):
-    finetune_model.train()
-    total_loss = 0.0
-    counter_t = 0
-    for seq_x, *_ in fv_train_loader:
+    forecasting_model.train()
+    total_loss = 0
+    for seq_x, *_ in fv_train_loader: 
         seq_x = seq_x.float().to(device)
         if task != 'in_domain':
             seq_x = adapter(seq_x)
         optimizer.zero_grad()
-        original, reconstructed, _ = finetune_model(seq_x)
-        loss = F.mse_loss(reconstructed, original)  # finetune with L2 only
+        pred = forecasting_model(seq_x)
+        loss = loss_fn(pred, seq_x[:,-49:-1,:]) # we are getting the last 48 segments from the sequence to compare it to the prediction
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-        counter_t +=1
-    # Evaluation
-    finetune_model.eval()
-    total_mse, total_mae = 0.0, 0.0
-    counter = 0
-    for seq_x, *_ in ft_train_loader:
+    print(f"Forecasting Epoch {epoch+1}: Loss = {total_loss / len(fv_train_loader):.4f}")
+
+# Evaluation on the test set of ETTm1
+forecasting_model.eval()
+mae_total, mse_total = 0, 0
+with torch.no_grad():
+    for seq_x, *_  in ft_train_loader:
         seq_x = seq_x.float().to(device)
         if task != 'in_domain':
             seq_x = adapter(seq_x)
-        mse, mae = finetune_model.evaluate_step(seq_x)
-        total_mse += mse
-        total_mae += mae
-        counter += 1
-
-    print(
-        f"Finetune Epoch [{epoch + 1}/10] | Loss: {total_loss / counter_t:.4f} | Avg MSE: {total_mse / counter:.4f} | Avg MAE: {total_mae / counter:.4f}")
+        pred = forecasting_model(seq_x)
+        mse = F.mse_loss(pred, seq_x[:,-49:-1,:]).item()
+        mae = F.l1_loss(pred, seq_x[:,-49:-1,:]).item()
+        mse_total += mse
+        mae_total += mae
+print(f"Final Test MSE: {mse_total / len(ft_train_loader):.4f}, MAE: {mae_total / len(ft_train_loader):.4f}")
 
